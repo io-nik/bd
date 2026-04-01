@@ -1,4 +1,5 @@
 -- Проверки того, что массаж проводит массажист
+-- Сейчас один абонемент может иметь НЕСКОЛЬКО договоров
 
 
 DROP TABLE IF EXISTS worker_role; -- E18
@@ -93,26 +94,18 @@ CREATE TABLE abonement ( -- E5
 
 CREATE TABLE contract ( -- E6 dodelat'
 	contract_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	client_id integer NOT NULL, ------------
-	admin_employee_id integer NOT NULL,
+	client_id integer NOT NULL REFERENCES client(client_id),
+	admin_employee_id integer NOT NULL REFERENCES worker(worker_id),
 	summ numeric(8, 2) NOT NULL,
-	abon_id bigint NOT NULL,
+	abon_id bigint UNIQUE NOT NULL REFERENCES abonement(abon_id),
 	date_sign timestamp NOT NULL,
-	CONSTRAINT fk_client_id FOREIGN KEY (client_id)
-        REFERENCES client(client_id),
-	CONSTRAINT fk_worker_id FOREIGN KEY (admin_employee_id) ------------------------------
-        REFERENCES worker(worker_id),
-	CONSTRAINT fk_abon_id FOREIGN KEY (abon_id)
-        REFERENCES abonement(abon_id),
 	CONSTRAINT chk_contract_summ CHECK (summ > 0)
 );
 
 
 CREATE TABLE payment_plan ( -- E7
 	pay_plan_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	contract_id bigint NOT NULL,
-	CONSTRAINT fk_contract_id FOREIGN KEY (contract_id)
-        REFERENCES contract(contract_id)
+	contract_id bigint UNIQUE NOT NULL REFERENCES contract(contract_id)
 );
 
 
@@ -121,23 +114,19 @@ CREATE TABLE payment_document ( -- E8
 	account_number varchar(20) NOT NULL,
 	summ numeric(8, 2) NOT NULL,
 	description text NOT NULL,
-	accountant_employee_id int NOT NULL, --------------------------------------------------
+	accountant_employee_id int NOT NULL REFERENCES worker(worker_id),
 	date_sign timestamp NOT NULL,
-	client_id int NOT NULL,
-	CONSTRAINT fk_accountant_id FOREIGN KEY (accountant_employee_id)
-        REFERENCES worker(worker_id),
-	CONSTRAINT fk_client_id FOREIGN KEY (client_id) REFERENCES client(client_id),
+	client_id int NOT NULL REFERENCES client(client_id),
 	CONSTRAINT chk_pay_doc_sum CHECK (summ > 0)
 );
 
 
 CREATE TABLE gym_zone ( -- E10
 	zone_id smallint NOT NULL,
-	gym_id int NOT NULL,
+	gym_id int NOT NULL REFERENCES gym(gym_id),
 	zone_name varchar(100),
 	description text,
-	CONSTRAINT pk_gym_zone PRIMARY KEY (gym_id, zone_id),
-	CONSTRAINT fk_gym_id FOREIGN KEY (gym_id) REFERENCES gym(gym_id)
+	PRIMARY KEY (gym_id, zone_id)
 );
 
 
@@ -178,6 +167,7 @@ CREATE TABLE service ( -- E12
 	description text,
 	pay_doc_id bigint NOT NULL,
 	specialist_id int NOT NULL, --------------------------------------------------
+	client_id int NOT NULL,
 	time_start timestamp NOT NULL,
 	time_end timestamp NOT NULL,
 	CONSTRAINT fk_pay_doc_id FOREIGN KEY (pay_doc_id) REFERENCES payment_document(pay_doc_id),

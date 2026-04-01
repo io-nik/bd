@@ -1,7 +1,7 @@
 from faker import Faker
 import random
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 fake = Faker("ru_RU")
 seed = 42
@@ -15,8 +15,8 @@ Faker.seed()
 NUM_GYMS = 3
 NUM_WORKERS = 18
 NUM_CLIENTS = 40
-NUM_ABONEMENTS = 28
 NUM_CONTRACTS = 24
+NUM_ABONEMENTS = NUM_CONTRACTS # = 28
 NUM_EXTRA_PAYMENTS = 20
 NUM_TRAININGS = 35
 NUM_VISITS = 80
@@ -41,7 +41,7 @@ JOB_POSITIONS = [
 ]
 
 ABON_TYPES = ["light", "smart", "infinity"]
-TRAINING_TYPES = ["personal", "group"]
+TRAINING_TYPES = ["personal", "group", "split"]
 SERVICE_TYPES = [
     "sport_massage",
     "point_massage",
@@ -178,6 +178,51 @@ def service_specialist_role(service_type):
     if service_type == "consultation":
         return random.choice(["nutritionist", "trainer", "instructor"])
     return "massagist"
+
+
+def split_payment_amount(total: Decimal, parts: int) -> list[Decimal]:
+    """
+    Разбивает сумму total на parts положительных частей,
+    чтобы в сумме получилось ровно total.
+    """
+    if parts == 1:
+        return [total]
+
+    total_cents = int((total * 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+    # выбираем точки разбиения в копейках
+    split_points = sorted(random.sample(range(1, total_cents), parts - 1))
+    chunks = []
+    prev = 0
+
+    for point in split_points:
+        chunks.append(point - prev)
+        prev = point
+    chunks.append(total_cents - prev)
+
+    return [Decimal(x) / Decimal("100") for x in chunks]
+
+
+def random_partial_total(total: Decimal) -> Decimal:
+    """
+    Возвращает сумму, которая меньше total, но не слишком маленькая.
+    Например, 40%-90% от полной суммы.
+    """
+    min_ratio = Decimal("0.40")
+    max_ratio = Decimal("0.90")
+
+    ratio = Decimal(str(random.uniform(float(min_ratio), float(max_ratio))))
+    partial = (total * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    # защита от случайного равенства total
+    if partial >= total:
+        partial = (total - Decimal("0.01")).quantize(Decimal("0.01"))
+
+    # защита от слишком маленькой суммы
+    if partial <= Decimal("0.00"):
+        partial = Decimal("0.01")
+
+    return partial
 
 
 # =========================
@@ -404,61 +449,52 @@ for client_id in range(1, NUM_CLIENTS + 1):
     )
 statements.append("")
 
-# abonement
-abonements = []
-statements.append("-- Абонементы")
-for abon_id in range(1, NUM_ABONEMENTS + 1):
+
+contracts = []
+payment_documents = []
+contract_payments = []
+payment_plans = []
+
+for contract_id in range(1, NUM_CONTRACTS + 1):
+    client = random.choice(clients)
+    admin_id = random.choice(admin_worker_ids)
+    accountant_id = random.choice(accountant_worker_ids)
+
+    # 1. Уникальный абонемент -- abonement
     abon_type = random.choice(ABON_TYPES)
     duration_days = abon_duration_days(abon_type)
-    client = random.choice(clients)
 
     start_min = max(client["enroll_date"], datetime.now().date() - timedelta(days=365))
     start_max = datetime.now().date() + timedelta(days=30)
     delta_days = max((start_max - start_min).days, 1)
+
     date_start = start_min + timedelta(days=random.randint(0, delta_days))
     time_start = datetime(date_start.year, date_start.month, date_start.day, 0, 0, 0)
     time_end = time_start + timedelta(days=duration_days, hours=23, minutes=59, seconds=59)
-
-    abon = {
-        "abon_id": abon_id,
-        "abon_type": abon_type,
-        "date_start": time_start,
-        "date_end": time_end,
-    }
-    abonements.append(abon)
 
     statements.append(
         "INSERT INTO abonement (abon_type, date_start, date_end) VALUES "
         f"({sql_quote(abon_type)}, {sql_timestamp(time_start)}, {sql_timestamp(time_end)});"
     )
-statements.append("")
 
-# contract
-contracts = []
-payment_plans = []
-payment_documents = []
-contract_payments = []
+    # так можно делать, потому что перед этим есть TRUNCATE ... RESTART IDENTITY
+    abon_id = contract_id
 
-statements.append("-- Договоры + план оплат + платежи за абонемент")
-for contract_id in range(1, NUM_CONTRACTS + 1):
-    client = random.choice(clients)
-    admin_id = random.choice(admin_worker_ids)
-    accountant_id = random.choice(accountant_worker_ids)
-    abon = random.choice(abonements)
-
-    sign_date = abon["date_start"] - timedelta(
+    # 2. Договор --  contract
+    sign_date = time_start - timedelta(
         days=random.randint(0, 7),
         hours=random.randint(0, 8),
         minutes=random.choice([0, 15, 30, 45]),
     )
-    summ = ABON_PRICES[abon["abon_type"]]
+
+    summ = ABON_PRICES[abon_type]
 
     contract = {
         "contract_id": contract_id,
         "client_id": client["client_id"],
         "admin_employee_id": admin_id,
         "summ": summ,
-        "abon_id": abon["abon_id"],
+        "abon_id": abon_id,
         "date_sign": sign_date,
     }
     contracts.append(contract)
@@ -469,39 +505,67 @@ for contract_id in range(1, NUM_CONTRACTS + 1):
         f"{contract['abon_id']}, {sql_timestamp(contract['date_sign'])});"
     )
 
+    # 3. План оплаты
     payment_plans.append(contract_id)
     statements.append(
         f"INSERT INTO payment_plan (contract_id) VALUES ({contract_id});"
     )
 
-    pay_doc_id = len(payment_documents) + 1
-    pay_time = sign_date + timedelta(minutes=random.randint(5, 120))
-    account_number = f"ACC-{pay_doc_id:05d}"
+    # 4. Несколько платёжек на один договор
+    # чаще 1-2, реже 3
+    num_payments = random.choices([1, 2, 3], weights=[50, 35, 15], k=1)[0]
 
-    pay_doc = {
-        "pay_doc_id": pay_doc_id,
-        "account_number": account_number,
-        "summ": summ,
-        "description": f"Оплата абонемента {abon['abon_type']}",
-        "accountant_employee_id": accountant_id,
-        "date_sign": pay_time,
-        "client_id": client["client_id"],
-    }
-    payment_documents.append(pay_doc)
+    # неполная оплата имеет смысл в основном для договоров,
+    # где есть несколько платёжек
+    is_partial_payment = False
 
-    statements.append(
-        "INSERT INTO payment_document "
-        "(account_number, summ, description, accountant_employee_id, date_sign, client_id) VALUES "
-        f"({sql_quote(account_number)}, {pay_doc['summ']}, {sql_quote(pay_doc['description'])}, "
-        f"{pay_doc['accountant_employee_id']}, {sql_timestamp(pay_doc['date_sign'])}, {pay_doc['client_id']});"
-    )
+    if num_payments > 1:
+        is_partial_payment = random.choices(
+            [True, False],
+            weights=[30, 70],  # примерно 30% "разбитых" договоров будут недооплачены
+            k=1
+        )[0]
 
-    contract_payments.append((pay_doc_id, contract_id))
-    statements.append(
-        f"INSERT INTO contract_payment (pay_doc_id, contract_id) VALUES ({pay_doc_id}, {contract_id});"
-    )
+    if is_partial_payment:
+        paid_total = random_partial_total(summ)
+    else:
+        paid_total = summ
 
-statements.append("")
+    payment_parts = split_payment_amount(paid_total, num_payments)
+
+    payment_date = sign_date + timedelta(minutes=random.randint(5, 90))
+
+    for part_summ in payment_parts:
+        pay_doc_id = len(payment_documents) + 1
+        account_number = f"ACC-{pay_doc_id:05d}"
+
+        pay_doc = {
+            "pay_doc_id": pay_doc_id,
+            "account_number": account_number,
+            "summ": part_summ,
+            "description": f"Оплата абонемента {abon_type} по договору #{contract_id}",
+            "accountant_employee_id": accountant_id,
+            "date_sign": payment_date,
+            "client_id": client["client_id"],
+        }
+        payment_documents.append(pay_doc)
+
+        statements.append(
+            "INSERT INTO payment_document "
+            "(account_number, summ, description, accountant_employee_id, date_sign, client_id) VALUES "
+            f"({sql_quote(pay_doc['account_number'])}, {pay_doc['summ']}, "
+            f"{sql_quote(pay_doc['description'])}, {pay_doc['accountant_employee_id']}, "
+            f"{sql_timestamp(pay_doc['date_sign'])}, {pay_doc['client_id']});"
+        )
+
+        contract_payments.append((pay_doc_id, contract_id))
+        statements.append(
+            f"INSERT INTO contract_payment (pay_doc_id, contract_id) VALUES ({pay_doc_id}, {contract_id});"
+        )
+
+        # следующая платёжка позже предыдущей
+        payment_date = payment_date + timedelta(days=random.randint(3, 20))
+
 
 # дополнительные платежи
 statements.append("-- Дополнительные платежные документы")
@@ -608,6 +672,8 @@ for service_id in range(1, NUM_SERVICES + 1):
         specialist_id = random.choice(workers)["worker_id"]
 
     pay_doc = random.choice(available_paid_docs)
+    service_client_id = pay_doc["client_id"]
+
     start_time = pay_doc["date_sign"] + timedelta(minutes=random.choice([15, 30, 60, 120]))
     end_time = start_time + timedelta(minutes=random.choice([30, 45, 60, 75]))
 
@@ -622,6 +688,7 @@ for service_id in range(1, NUM_SERVICES + 1):
             "consultation": "Консультация специалиста",
         }[service_type],
         "pay_doc_id": pay_doc["pay_doc_id"],
+        "client_id": service_client_id,
         "specialist_id": specialist_id,
         "time_start": start_time,
         "time_end": end_time,
@@ -630,9 +697,9 @@ for service_id in range(1, NUM_SERVICES + 1):
 
     statements.append(
         "INSERT INTO service "
-        "(service_type, description, pay_doc_id, specialist_id, time_start, time_end) VALUES "
+        "(service_type, description, pay_doc_id, client_id, specialist_id, time_start, time_end) VALUES "
         f"({sql_quote(service['service_type'])}, {sql_quote(service['description'])}, "
-        f"{service['pay_doc_id']}, {service['specialist_id']}, "
+        f"{service['pay_doc_id']}, {service['client_id']}, {service['specialist_id']}, "
         f"{sql_timestamp(service['time_start'])}, {sql_timestamp(service['time_end'])});"
     )
 statements.append("")
