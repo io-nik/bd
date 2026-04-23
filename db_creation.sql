@@ -1,7 +1,6 @@
 -- Проверки того, что массаж проводит массажист
--- Сейчас один абонемент может иметь НЕСКОЛЬКО договоров
 
-
+/*
 DROP TABLE IF EXISTS worker_role; -- E18
 DROP TABLE IF EXISTS contract_payment; -- E17
 DROP TABLE IF EXISTS employee; -- E16
@@ -12,8 +11,8 @@ DROP TABLE IF EXISTS service; -- E12
 DROP TABLE IF EXISTS visit; -- E11
 DROP TABLE IF EXISTS training; -- E9
 DROP TABLE IF EXISTS gym_zone; -- E10
-DROP TABLE IF EXISTS payment_document; -- E8
 DROP TABLE IF EXISTS payment_plan; -- E7
+DROP TABLE IF EXISTS payment_document; -- E8
 DROP TABLE IF EXISTS contract; -- E6
 DROP TABLE IF EXISTS abonement; -- E5
 DROP TABLE IF EXISTS client; -- E4
@@ -28,7 +27,10 @@ DROP TYPE IF EXISTS TrainingType;
 DROP TYPE IF EXISTS AbonementType;
 DROP TYPE IF EXISTS JobPosition;
 DROP TYPE IF EXISTS Sex;
-
+DROP TYPE IF EXISTS ContractType;
+*/
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
 
 
 CREATE TABLE gym ( -- E1
@@ -92,20 +94,19 @@ CREATE TABLE abonement ( -- E5
 );
 
 
+CREATE TYPE ContractType AS ENUM ('installment', 'one-time-pay');
+
 CREATE TABLE contract ( -- E6 dodelat'
 	contract_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	client_id integer NOT NULL REFERENCES client(client_id),
 	admin_employee_id integer NOT NULL REFERENCES worker(worker_id),
 	summ numeric(8, 2) NOT NULL,
+	duration_month integer NOT NULL CHECK (duration_month IN (1, 3, 6, 12)),
+	contract_type ContractType NOT NULL,
+	installment_month integer CHECK (installment_month > 0),
 	abon_id bigint UNIQUE NOT NULL REFERENCES abonement(abon_id),
 	date_sign timestamp NOT NULL,
 	CONSTRAINT chk_contract_summ CHECK (summ > 0)
-);
-
-
-CREATE TABLE payment_plan ( -- E7
-	pay_plan_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	contract_id bigint UNIQUE NOT NULL REFERENCES contract(contract_id)
 );
 
 
@@ -118,6 +119,17 @@ CREATE TABLE payment_document ( -- E8
 	date_sign timestamp NOT NULL,
 	client_id int NOT NULL REFERENCES client(client_id),
 	CONSTRAINT chk_pay_doc_sum CHECK (summ > 0)
+);
+
+
+CREATE TABLE payment_plan ( -- E7
+	pay_plan_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	contract_id bigint NOT NULL REFERENCES contract(contract_id),
+	payment_num integer NOT NULL CHECK (payment_num > 0),
+	due_date timestamp NOT NULL,
+	planned_amount numeric(8, 2) NOT NULL,
+	is_paid boolean NOT NULL DEFAULT false,
+	pay_doc_id bigint REFERENCES payment_document(pay_doc_id)
 );
 
 
@@ -134,17 +146,18 @@ CREATE TYPE TrainingType AS ENUM ('personal', 'group', 'split');
 
 CREATE TABLE training ( -- E9
 	training_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	trainer_id int NOT NULL, ------------
+	trainer_id int NOT NULL,
 	zone_id smallint NOT NULL,
 	gym_id int NOT NULL,
 	time_start timestamp NOT NULL,
 	time_end timestamp NOT NULL,
 	training_type TrainingType NOT NULL,
+	
 	CONSTRAINT fk_trainer_employee FOREIGN KEY (trainer_id) REFERENCES worker(worker_id),
 	CONSTRAINT fk_gym_zone_id FOREIGN KEY (gym_id, zone_id) 
 		REFERENCES gym_zone(gym_id, zone_id),
 	CONSTRAINT chk_training_time CHECK (time_start < time_end)
-);
+); 
 
 
 CREATE TABLE visit ( -- E11
@@ -190,13 +203,14 @@ CREATE TABLE training_visit ( -- E14
 	client_id int NOT NULL,
 	training_id bigint NOT NULL,
 	training_reason TrainingReason NOT NULL,
-	contract_id bigint, --------------------- Это является внешним ключом?
-	pay_doc_id bigint, --------------------- Это является внешним ключом?
+	contract_id bigint,
+	pay_doc_id bigint,
 	CONSTRAINT fk_client_id FOREIGN KEY (client_id) REFERENCES client(client_id),
 	CONSTRAINT fk_training_id FOREIGN KEY (training_id) REFERENCES training(training_id),
 	CONSTRAINT fk_contract_id FOREIGN KEY (contract_id) REFERENCES contract(contract_id),
-	CONSTRAINT fk_pay_doc_id FOREIGN KEY (pay_doc_id) REFERENCES payment_document(pay_doc_id)
-);
+	CONSTRAINT fk_pay_doc_id FOREIGN KEY (pay_doc_id) REFERENCES payment_document(pay_doc_id),
+	CONSTRAINT train_only_once UNIQUE (client_id, training_id)
+);  -- на треню можно записаться только единожды
 
 
 CREATE TYPE GradeType AS ENUM ('master', 'expert', 'top');
